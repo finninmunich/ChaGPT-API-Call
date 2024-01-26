@@ -1,11 +1,11 @@
 config_dict = dict(
 
     Acess_config = dict(
-        authorization = "Your OpenAI API keys",
+        authorization = "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",
     ),
 
     Model_config = dict(
-        model_name = "gpt-3.5-turbo",
+        model_name = "gpt-3.5-turbo-1106",
         request_address = "https://api.openai.com/v1/chat/completions",
     ),
 
