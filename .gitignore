@@ -7,3 +7,5 @@
 *.idea/
 *.pyc
 *chatgpt_config.py
+data/
+config/chatgpt_config.py
