@@ -6,6 +6,7 @@ from src.openai_request import OpenAI_Request
 from tools.cfg_wrapper import load_config
 from tools.context import ContextHandler
 from tools.tokennizer import Tokennizer
+import os
 
 SCENE_TYPE = ["urban street", "suburb street", "urban scene", "highway scene"]
 DAY_WEATHER = ["sunny day", "clear night", "cloudy day", "rainy night"]
@@ -102,7 +103,7 @@ def process_data(data):
         f"scene_type:{scene_type}, weather_day:{weather_day}, light_condition:{light_condition}, object:{object}, detail:{detail}"
     return scene_type, weather_day, light_condition, object, detail
 def sentences_generation(keys, json_file_path, system_prompt, model_name, request_address, context_handler, tokenizer,
-                         log_time=False, context_max=3200):
+                         log_time=False, context_max=3200,from_start_generation=True):
     requestor = OpenAI_Request(keys, model_name, request_address)
     #context_handler.clear()
     system_prompt_length = tokenizer.num_tokens_from_string(system_prompt)
@@ -113,54 +114,65 @@ def sentences_generation(keys, json_file_path, system_prompt, model_name, reques
         for line in file:
             data = json.loads(line)
             processed_dict_list.append(data)
+    if os.path.exists(json_file_path[:-6] + '_updated.jsonl') and from_start_generation:
+        os.remove(json_file_path[:-6] + '_updated.jsonl')
+    with open(json_file_path[:-6] + '_updated.jsonl', 'a') as f:
+        for i, data in enumerate(processed_dict_list):
+            if (i+1)%200==0:
+                context_handler.clear()
+                system_prompt_length = tokenizer.num_tokens_from_string(system_prompt)
+                context_handler.append_cur_to_context(system_prompt, system_prompt_length)
+                requestor.post_request(context_handler.context)
+            scene_type, weather_day, light_condition, object, detail = process_data(data)
+            input_s = (f"Scene type: {scene_type}; "
+                       f"Time and weather conditions: {weather_day}; "
+                       f"Light Condition: {light_condition}; "
+                       f"Objects in the image:{object}; "
+                       f"Specific scene details:{detail}")
+            inputs_length = tokenizer.num_tokens_from_string(input_s)
+            context_handler.append_cur_to_context(input_s, inputs_length)
 
-    for i, data in enumerate(processed_dict_list):
-        scene_type, weather_day, light_condition, object, detail = process_data(data)
-        input_s = (f"Scene type: {scene_type}; "
-                   f"Time and weather conditions: {weather_day}; "
-                   f"Light Condition: {light_condition}; "
-                   f"Objects in the image:{object}; "
-                   f"Specific scene details:{detail}")
-        inputs_length = tokenizer.num_tokens_from_string(input_s)
-        if i%200==0:
-            with open(json_file_path[:-6]+'_updated.jsonl', 'a') as f:
-                for item in processed_dict_list:
-                    f.write(json.dumps(item) + "\n")
-            context_handler.clear()
-            system_prompt_length = tokenizer.num_tokens_from_string(system_prompt)
-            context_handler.append_cur_to_context(system_prompt, system_prompt_length)
-            requestor.post_request(context_handler.context)
-        context_handler.append_cur_to_context(input_s, inputs_length)
+            st_time = time.time()
+            while True:
+                try:
+                    res = requestor.post_request(context_handler.context)
 
-        st_time = time.time()
+                    if res.status_code == 200:
 
-        res = requestor.post_request(context_handler.context)
-        ed_time = time.time()
+                        response = res.json()['choices'][0]['message']['content']
+                        # cut \n for show
+                        response = response.lstrip("\n")
 
-        if res.status_code == 200:
+                        completion_length = res.json()['usage']['completion_tokens']
+                        total_length = res.json()['usage']['total_tokens']
+                        data['text'] = response
+                        print(f"\nresponse : {response}")
+                        f.write(json.dumps(data) + "\n")
+                        context_handler.append_cur_to_context(response, completion_length, tag=1)
+                        if total_length > context_max:
+                            context_handler.cut_context(total_length, tokenizer)
+                        break
 
-            response = res.json()['choices'][0]['message']['content']
-            # cut \n for show
-            response = response.lstrip("\n")
+                    else:
+                        status_code = res.status_code
+                        reason = res.reason
+                        des = res.text
+                        print(f"error happened in {i}th data")
+                        print(f'visit error :\n status code: {status_code}\n reason: {reason}\n err description: {des}\n '
+                                    f'please check whether your account  can access OpenAI API normally')
+                        print('sleep 60s')
+                        time.sleep(60)
+                except Exception as e:
+                    # 处理其他类型的错误
+                    print(f"An error occurred: {e}")
+                    print("Waiting for 60 seconds before retrying.")
+                    print(f"error happened in {i}th data")
+                    time.sleep(60)
 
-            completion_length = res.json()['usage']['completion_tokens']
-            total_length = res.json()['usage']['total_tokens']
-            data['text'] = response
-            print(f"\nresponse : {response}")
+            ed_time = time.time()
 
-            context_handler.append_cur_to_context(response, completion_length, tag=1)
-            if total_length > context_max:
-                context_handler.cut_context(total_length, tokenizer)
-
-        else:
-            status_code = res.status_code
-            reason = res.reason
-            des = res.text
-            raise print(f'visit error :\n status code: {status_code}\n reason: {reason}\n err description: {des}\n '
-                        f'please check whether your account  can access OpenAI API normally')
-
-        if log_time:
-            print(f'time cost : {ed_time - st_time}')
+            if log_time:
+                print(f'time cost : {ed_time - st_time}')
 
 
 if __name__ == '__main__':
